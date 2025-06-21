@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
 import {
   Plus,
   Search,
@@ -44,6 +46,7 @@ import { cn } from '@/lib/utils';
 
 interface Todo {
   id: string;
+  user_id: string;
   title: string;
   description?: string;
   completed: boolean;
@@ -80,46 +83,10 @@ const categories = [
 ];
 
 export default function TodosPage() {
-  const [todos, setTodos] = useState<Todo[]>([
-    {
-      id: '1',
-      title: '完成项目提案',
-      description: '完成第四季度营销活动的项目提案',
-      completed: false,
-      priority: 'high',
-      category: 'work',
-      createdAt: new Date(2024, 0, 15),
-      dueDate: new Date(2024, 0, 20),
-    },
-    {
-      id: '2',
-      title: '购买杂货',
-      description: '牛奶、面包、鸡蛋和本周的蔬菜',
-      completed: false,
-      priority: 'medium',
-      category: 'shopping',
-      createdAt: new Date(2024, 0, 14),
-    },
-    {
-      id: '3',
-      title: '晨间锻炼',
-      description: '30分钟有氧运动和力量训练',
-      completed: true,
-      priority: 'low',
-      category: 'health',
-      createdAt: new Date(2024, 0, 13),
-    },
-    {
-      id: '4',
-      title: '学习 React Hooks',
-      description: '完成高级 Hooks 教程系列',
-      completed: false,
-      priority: 'medium',
-      category: 'learning',
-      createdAt: new Date(2024, 0, 12),
-    },
-  ]);
-
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+  const [todos, setTodos] = useState<Todo[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterPriority, setFilterPriority] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
@@ -131,6 +98,103 @@ export default function TodosPage() {
     priority: 'medium' as Todo['priority'],
     category: 'personal',
   });
+
+  useEffect(() => {
+    const fetchUserAndTodos = async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push('/auth/login');
+        return;
+      }
+      setUser(user);
+      await fetchTodos(user.id);
+      setLoading(false);
+    };
+    fetchUserAndTodos();
+  }, [router]);
+
+  const fetchTodos = async (userId: string) => {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("todos")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    if (!error && data) {
+      setTodos(
+        data.map((todo: any) => ({
+          ...todo,
+          createdAt: todo.created_at ? new Date(todo.created_at) : undefined,
+          dueDate: todo.due_date ? new Date(todo.due_date) : undefined,
+        }))
+      );
+    }
+  };
+
+  const addTodo = async () => {
+    if (!newTodo.title.trim() || !user) return;
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("todos")
+      .insert([{ ...newTodo, user_id: user.id }])
+      .select();
+    if (!error && data) {
+      setTodos(prev => [
+        {
+          ...data[0],
+          createdAt: data[0].created_at ? new Date(data[0].created_at) : undefined,
+          dueDate: data[0].due_date ? new Date(data[0].due_date) : undefined,
+        },
+        ...prev,
+      ]);
+      setNewTodo({ title: '', description: '', priority: 'medium', category: 'personal' });
+    }
+  };
+
+  const deleteTodo = async (id: string) => {
+    const supabase = createClient();
+    const { error } = await supabase.from("todos").delete().eq("id", id);
+    if (!error) {
+      setTodos(prev => prev.filter(todo => todo.id !== id));
+    }
+  };
+
+  const updateTodo = async (updatedTodo: Todo) => {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("todos")
+      .update({
+        title: updatedTodo.title,
+        description: updatedTodo.description,
+        priority: updatedTodo.priority,
+        category: updatedTodo.category,
+        completed: updatedTodo.completed,
+        due_date: updatedTodo.dueDate ? updatedTodo.dueDate.toISOString() : null,
+      })
+      .eq("id", updatedTodo.id)
+      .select();
+    if (!error && data) {
+      setTodos(prev =>
+        prev.map(todo =>
+          todo.id === updatedTodo.id
+            ? {
+                ...data[0],
+                createdAt: data[0].created_at ? new Date(data[0].created_at) : undefined,
+                dueDate: data[0].due_date ? new Date(data[0].due_date) : undefined,
+              }
+            : todo
+        )
+      );
+      setEditingTodo(null);
+    }
+  };
+
+  const toggleTodo = async (id: string) => {
+    const todo = todos.find(t => t.id === id);
+    if (!todo) return;
+    await updateTodo({ ...todo, completed: !todo.completed });
+  };
 
   const filteredTodos = useMemo(() => {
     return todos.filter((todo) => {
@@ -155,43 +219,17 @@ export default function TodosPage() {
     return { total, completed, pending, highPriority };
   }, [todos]);
 
-  const addTodo = () => {
-    if (!newTodo.title.trim()) return;
-    
-    const todo: Todo = {
-      id: Date.now().toString(),
-      title: newTodo.title,
-      description: newTodo.description || undefined,
-      completed: false,
-      priority: newTodo.priority,
-      category: newTodo.category,
-      createdAt: new Date(),
-    };
-    
-    setTodos(prev => [todo, ...prev]);
-    setNewTodo({ title: '', description: '', priority: 'medium', category: 'personal' });
-  };
-
-  const toggleTodo = (id: string) => {
-    setTodos(prev => prev.map(todo => 
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
-    ));
-  };
-
-  const deleteTodo = (id: string) => {
-    setTodos(prev => prev.filter(todo => todo.id !== id));
-  };
-
-  const updateTodo = (updatedTodo: Todo) => {
-    setTodos(prev => prev.map(todo => 
-      todo.id === updatedTodo.id ? updatedTodo : todo
-    ));
-    setEditingTodo(null);
-  };
-
   const getCategoryInfo = (categoryValue: string) => {
     return categories.find(cat => cat.value === categoryValue) || categories[1];
   };
+
+  if (loading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center">
+        <p>加载中...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -235,7 +273,6 @@ export default function TodosPage() {
                 添加任务
               </Button>
             </div>
-            {/* Collapsible section for more options can be added here */}
           </CardContent>
         </Card>
       </motion.div>
@@ -456,7 +493,7 @@ export default function TodosPage() {
                         <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
                           <div className="flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
-                            {todo.createdAt.toLocaleDateString()}
+                            {todo.createdAt?.toLocaleDateString?.()}
                           </div>
                           {todo.dueDate && (
                             <div className="flex items-center gap-1">
