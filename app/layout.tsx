@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { UserMenu } from "@/components/user-menu";
 import "./globals.css";
 
 const defaultUrl = process.env.VERCEL_URL
@@ -45,12 +45,7 @@ export default function RootLayout({
                 </span>
               </Link>
               <div className="flex flex-1 items-center justify-end space-x-2">
-                <Link href="/auth/login" passHref>
-                  <Button variant="ghost">登录</Button>
-                </Link>
-                <Link href="/auth/sign-up" passHref>
-                  <Button>注册</Button>
-                </Link>
+                <UserMenu />
               </div>
             </div>
           </header>
