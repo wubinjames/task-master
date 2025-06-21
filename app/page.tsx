@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -20,6 +20,9 @@ import {
   TrendingUp,
   Target,
   Zap,
+  Paperclip,
+  X,
+  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -43,6 +46,22 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
+import { User } from '@supabase/supabase-js';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  rectSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 interface Todo {
   id: string;
@@ -52,8 +71,20 @@ interface Todo {
   completed: boolean;
   priority: 'low' | 'medium' | 'high';
   category: string;
+  attachments?: string[];
   createdAt: Date;
   dueDate?: Date;
+}
+
+interface Attachment {
+  id: string;
+  file: File;
+}
+
+interface DialogAttachment {
+  id: string;
+  file?: File;
+  url?: string;
 }
 
 const priorityColors = {
@@ -82,22 +113,138 @@ const categories = [
   { value: 'learning', label: '学习', color: 'bg-orange-500' },
 ];
 
+function FloatingStats({ stats }: { stats: any }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -100 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="fixed top-24 left-4 z-10 hidden md:block"
+    >
+      <Card className="backdrop-blur-sm bg-white/80 dark:bg-slate-800/80 border-0 shadow-2xl w-56">
+        <CardContent className="p-4 space-y-4">
+          <div>
+            <div className="flex items-center text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <TrendingUp className="h-4 w-4 mr-2" />
+              <span>进度</span>
+              <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+                {stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0}%
+              </span>
+            </div>
+            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+              <motion.div
+                className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full"
+                initial={{ width: 0 }}
+                animate={{ 
+                  width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` 
+                }}
+                transition={{ duration: 1, ease: "easeOut" }}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 text-center">
+            <div>
+              <div className="flex items-center justify-center text-slate-800 dark:text-white">
+                <Target className="h-4 w-4 mr-1" />
+                <span className="text-2xl font-bold">{stats.total}</span>
+              </div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">总任务</div>
+            </div>
+            <div>
+              <div className="flex items-center justify-center text-green-500">
+                <CheckCircle2 className="h-4 w-4 mr-1" />
+                <span className="text-2xl font-bold">{stats.completed}</span>
+              </div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">已完成</div>
+            </div>
+            <div>
+              <div className="flex items-center justify-center text-yellow-500">
+                <Clock className="h-4 w-4 mr-1" />
+                <span className="text-2xl font-bold">{stats.pending}</span>
+              </div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">待处理</div>
+            </div>
+            <div>
+              <div className="flex items-center justify-center text-red-500">
+                <Zap className="h-4 w-4 mr-1" />
+                <span className="text-2xl font-bold">{stats.highPriority}</span>
+              </div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">高优</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+}
+
+const SortableAttachment = ({
+  item,
+  onRemove,
+  className = "w-24 h-24",
+}: {
+  item: DialogAttachment;
+  onRemove: (id: string) => void;
+  className?: string;
+}) => {
+  const { attributes, listeners, setNodeRef, transform, transition } =
+    useSortable({ id: item.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  const imageUrl = item.file ? URL.createObjectURL(item.file) : item.url;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className="relative group touch-none"
+    >
+      <img
+        src={imageUrl}
+        alt="Preview"
+        className={cn("object-cover rounded-md", className)}
+      />
+      <button
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onRemove(item.id);
+        }}
+        className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  );
+};
+
 export default function TodosPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterPriority, setFilterPriority] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const [dialogAttachments, setDialogAttachments] = useState<DialogAttachment[]>([]);
   const [newTodo, setNewTodo] = useState({
     title: '',
     description: '',
     priority: 'medium' as Todo['priority'],
     category: 'personal',
   });
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dialogFileInputRef = useRef<HTMLInputElement>(null);
+  const sensors = useSensors(useSensor(PointerSensor));
 
   useEffect(() => {
     const fetchUserAndTodos = async () => {
@@ -110,6 +257,7 @@ export default function TodosPage() {
       setUser(user);
       await fetchTodos(user.id);
       setLoading(false);
+      inputRef.current?.focus();
     };
     fetchUserAndTodos();
   }, [router]);
@@ -132,13 +280,133 @@ export default function TodosPage() {
     }
   };
 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      const newFiles = Array.from(event.target.files).map((file) => ({
+        id: `${file.name}-${Date.now()}`,
+        file,
+      }));
+      if (attachments.length + newFiles.length > 9) {
+        alert("最多只能上传 9 张图片。");
+        return;
+      }
+      setAttachments((prev) => [...prev, ...newFiles]);
+    }
+  };
+
+  const handleDialogFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      const newFiles = Array.from(event.target.files).map((file) => ({
+        id: `${file.name}-${Date.now()}`,
+        file,
+      }));
+      if (dialogAttachments.length + newFiles.length > 9) {
+        alert("最多只能上传 9 张图片。");
+        return;
+      }
+      setDialogAttachments((prev) => [...prev, ...newFiles]);
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => prev.filter((att) => att.id !== id));
+  };
+
+  const removeDialogAttachment = (id: string) => {
+    setDialogAttachments((prev) => prev.filter((att) => att.id !== id));
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      setAttachments((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
+
+  const handleDialogDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      setDialogAttachments((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
+
+  const uploadAttachments = async (files: File[]): Promise<string[]> => {
+    if (!user || files.length === 0) return [];
+    const supabase = createClient();
+    const urls: string[] = [];
+
+    for (const file of files) {
+      const filePath = `${user.id}/${Date.now()}-${file.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from("task-master")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        console.error("Upload error:", uploadError.message);
+        continue;
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from("task-master")
+        .getPublicUrl(filePath);
+      
+      urls.push(publicUrl);
+    }
+    return urls;
+  };
+
+  const deleteAttachments = async (urls: string[]) => {
+    if (urls.length === 0) return;
+    const supabase = createClient();
+
+    const filePaths = urls
+      .map((url) => {
+        try {
+          const path = new URL(url).pathname.split("/task-master/")[1];
+          return path ? decodeURIComponent(path) : null;
+        } catch (e) {
+          console.error(`Invalid URL for attachment deletion: ${url}`, e);
+          return null;
+        }
+      })
+      .filter((path): path is string => path !== null);
+
+    if (filePaths.length === 0) {
+      return;
+    }
+
+    const { error } = await supabase.storage
+      .from("task-master")
+      .remove(filePaths);
+
+    if (error) {
+      console.error("Error deleting attachments:", error.message);
+    }
+  };
+
   const addTodo = async () => {
     if (!newTodo.title.trim() || !user) return;
+    setIsUploading(true);
+
+    let attachmentUrls: string[] = [];
+    if (attachments.length > 0) {
+      attachmentUrls = await uploadAttachments(attachments.map((a) => a.file));
+    }
+
     const supabase = createClient();
     const { data, error } = await supabase
       .from("todos")
-      .insert([{ ...newTodo, user_id: user.id }])
+      .insert([{ ...newTodo, user_id: user.id, attachments: attachmentUrls }])
       .select();
+
     if (!error && data) {
       setTodos(prev => [
         {
@@ -149,49 +417,113 @@ export default function TodosPage() {
         ...prev,
       ]);
       setNewTodo({ title: '', description: '', priority: 'medium', category: 'personal' });
+      setAttachments([]);
     }
+    setIsUploading(false);
   };
 
   const deleteTodo = async (id: string) => {
+    const todoToDelete = todos.find((t) => t.id === id);
+    if (!todoToDelete) return;
+
+    if (todoToDelete.attachments && todoToDelete.attachments.length > 0) {
+      await deleteAttachments(todoToDelete.attachments);
+    }
+
     const supabase = createClient();
     const { error } = await supabase.from("todos").delete().eq("id", id);
     if (!error) {
-      setTodos(prev => prev.filter(todo => todo.id !== id));
+      setTodos((prev) => prev.filter((todo) => todo.id !== id));
     }
   };
 
-  const updateTodo = async (updatedTodo: Todo) => {
+  const updateTodo = async (
+    updatedTodo: Omit<Todo, "id"> & { id: string }
+  ) => {
     const supabase = createClient();
+    const { id, user_id, createdAt, ...updateData } = updatedTodo;
+
+    const payload = {
+      title: updateData.title,
+      description: updateData.description,
+      completed: updateData.completed,
+      priority: updateData.priority,
+      category: updateData.category,
+      attachments: updateData.attachments,
+      due_date: updateData.dueDate ? updateData.dueDate.toISOString() : null,
+    };
+
     const { data, error } = await supabase
       .from("todos")
-      .update({
-        title: updatedTodo.title,
-        description: updatedTodo.description,
-        priority: updatedTodo.priority,
-        category: updatedTodo.category,
-        completed: updatedTodo.completed,
-        due_date: updatedTodo.dueDate ? updatedTodo.dueDate.toISOString() : null,
-      })
-      .eq("id", updatedTodo.id)
+      .update(payload)
+      .eq("id", id)
       .select();
-    if (!error && data) {
-      setTodos(prev =>
-        prev.map(todo =>
-          todo.id === updatedTodo.id
-            ? {
-                ...data[0],
-                createdAt: data[0].created_at ? new Date(data[0].created_at) : undefined,
-                dueDate: data[0].due_date ? new Date(data[0].due_date) : undefined,
-              }
-            : todo
-        )
-      );
-      setEditingTodo(null);
+
+    if (error) {
+      console.error("Error updating todo:", error);
+      return null;
     }
+
+    if (data) {
+      const newTodo = {
+        ...data[0],
+        createdAt: data[0].created_at
+          ? new Date(data[0].created_at)
+          : undefined,
+        dueDate: data[0].due_date ? new Date(data[0].due_date) : undefined,
+      };
+      setTodos((prev) =>
+        prev.map((todo) => (todo.id === id ? newTodo : todo))
+      );
+      return newTodo;
+    }
+    return null;
+  };
+
+  const saveEditedTodo = async () => {
+    if (!editingTodo) return;
+    
+    setIsUploading(true);
+    
+    const originalUrls = editingTodo.attachments || [];
+    const remainingUrls = dialogAttachments
+      .filter((a) => a.url)
+      .map((a) => a.url as string);
+    const urlsToDelete = originalUrls.filter(
+      (url) => !remainingUrls.includes(url)
+    );
+
+    if (urlsToDelete.length > 0) {
+      await deleteAttachments(urlsToDelete);
+    }
+
+    const newFilesToUpload = dialogAttachments
+      .filter((a) => a.file)
+      .map((a) => a.file as File);
+    const newUrls = await uploadAttachments(newFilesToUpload);
+
+    let newUrlIndex = 0;
+    const finalAttachmentUrls = dialogAttachments.map((a) => {
+      if (a.url) {
+        return a.url;
+      }
+      return newUrls[newUrlIndex++];
+    });
+
+    const updatedTodoData = {
+      ...editingTodo,
+      attachments: finalAttachmentUrls,
+    };
+    
+    await updateTodo(updatedTodoData);
+    
+    setEditingTodo(null);
+    setDialogAttachments([]);
+    setIsUploading(false);
   };
 
   const toggleTodo = async (id: string) => {
-    const todo = todos.find(t => t.id === id);
+    const todo = todos.find((t) => t.id === id);
     if (!todo) return;
     await updateTodo({ ...todo, completed: !todo.completed });
   };
@@ -232,118 +564,88 @@ export default function TodosPage() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      {/* Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="text-center mb-8"
-      >
-        <h1 className="text-4xl md:text-6xl font-bold bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent mb-4">
-          ✨ 任务大师
-        </h1>
-        <p className="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
-          通过这个设计精美的任务管理系统，改变您的生产力
-        </p>
-      </motion.div>
-
+    <div className="container mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-8 relative">
+      <FloatingStats stats={stats} />
+      
       {/* Quick Add Todo */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="mb-8"
-      >
-        <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
-          <CardContent className="p-6">
-            <div className="flex gap-4">
-              <Input
-                placeholder="有什么需要做的？"
-                value={newTodo.title}
-                onChange={(e) => setNewTodo(prev => ({ ...prev, title: e.target.value }))}
-                className="flex-1 bg-white/50 dark:bg-slate-700/50 border-0 h-12 text-lg"
-                onKeyDown={(e) => e.key === 'Enter' && addTodo()}
-              />
-              <Button 
-                size="lg" 
-                onClick={addTodo}
-                className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-xl h-12"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                添加任务
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* Stats Cards */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
-        className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"
-      >
-        <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
-          <CardContent className="p-4 text-center">
-            <Target className="h-8 w-8 text-indigo-500 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-slate-800 dark:text-white">{stats.total}</div>
-            <div className="text-sm text-slate-600 dark:text-slate-400">总任务数</div>
-          </CardContent>
-        </Card>
-        
-        <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
-          <CardContent className="p-4 text-center">
-            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-slate-800 dark:text-white">{stats.completed}</div>
-            <div className="text-sm text-slate-600 dark:text-slate-400">已完成</div>
-          </CardContent>
-        </Card>
-        
-        <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
-          <CardContent className="p-4 text-center">
-            <Clock className="h-8 w-8 text-yellow-500 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-slate-800 dark:text-white">{stats.pending}</div>
-            <div className="text-sm text-slate-600 dark:text-slate-400">待处理</div>
-          </CardContent>
-        </Card>
-        
-        <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
-          <CardContent className="p-4 text-center">
-            <Zap className="h-8 w-8 text-red-500 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-slate-800 dark:text-white">{stats.highPriority}</div>
-            <div className="text-sm text-slate-600 dark:text-slate-400">高优先级</div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* Progress Bar */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.3 }}
         className="mb-8"
       >
         <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
           <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                进度
-              </span>
-              <span className="text-sm text-slate-600 dark:text-slate-400">
-                {stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0}%
-              </span>
+            <div className="flex items-start gap-4">
+              <div className="flex-1 space-y-4">
+                <Textarea
+                  ref={inputRef}
+                  placeholder="有什么需要做的？"
+                  value={newTodo.title}
+                  onChange={(e) =>
+                    setNewTodo((prev) => ({
+                      ...prev,
+                      title: e.target.value,
+                      description: e.target.value,
+                    }))
+                  }
+                  className="flex-1 bg-white/50 dark:bg-slate-700/50 border-0 h-24 text-lg p-4 resize-none"
+                />
+
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={attachments}
+                    strategy={rectSortingStrategy}
+                  >
+                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                      {attachments.map((attachment) => (
+                        <SortableAttachment
+                          key={attachment.id}
+                          item={{id: attachment.id, file: attachment.file}}
+                          onRemove={removeAttachment}
+                          className="w-20 h-20"
+                        />
+                      ))}
+                      {attachments.length < 9 && (
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          className="w-20 h-20 bg-slate-100 dark:bg-slate-700/50 rounded-md flex items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-indigo-500 transition-colors"
+                        >
+                          <Plus className="h-8 w-8 text-slate-400" />
+                        </button>
+                      )}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                 <Button
+                  size="lg"
+                  onClick={addTodo}
+                  disabled={isUploading}
+                  className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-xl h-24 w-24 text-lg"
+                >
+                  {isUploading ? (
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    "添加"
+                  )}
+                </Button>
+              </div>
             </div>
-            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-3 overflow-hidden">
-              <motion.div
-                className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full"
-                initial={{ width: 0 }}
-                animate={{ 
-                  width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` 
-                }}
-                transition={{ duration: 1, ease: "easeOut" }}
-              />
-            </div>
+            <input
+              type="file"
+              ref={fileInputRef}
+              multiple
+              accept="image/*"
+              onChange={handleFileChange}
+              className="hidden"
+            />
           </CardContent>
         </Card>
       </motion.div>
@@ -352,58 +654,57 @@ export default function TodosPage() {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
-        className="flex flex-col md:flex-row gap-4 mb-8"
+        transition={{ delay: 0.3 }}
+        className="mb-8"
       >
         <Card className="flex-1 backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
           <CardContent className="p-4">
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="relative flex-1">
+            <div className="flex flex-col md:flex-row gap-4 items-center">
+              <div className="flex-1 flex gap-4">
+                <Select value={filterStatus} onValueChange={setFilterStatus}>
+                  <SelectTrigger className="w-full md:w-32 bg-white/50 dark:bg-slate-700/50 border-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部</SelectItem>
+                    <SelectItem value="pending">待处理</SelectItem>
+                    <SelectItem value="completed">已完成</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={filterPriority} onValueChange={setFilterPriority}>
+                  <SelectTrigger className="w-full md:w-32 bg-white/50 dark:bg-slate-700/50 border-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">所有优先级</SelectItem>
+                    <SelectItem value="high">高</SelectItem>
+                    <SelectItem value="medium">中</SelectItem>
+                    <SelectItem value="low">低</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={filterCategory} onValueChange={setFilterCategory}>
+                  <SelectTrigger className="w-full md:w-36 bg-white/50 dark:bg-slate-700/50 border-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">所有分类</SelectItem>
+                    {categories.map(cat => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="relative w-full md:w-auto md:min-w-64">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
                 <Input
                   placeholder="搜索任务..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 bg-white/50 dark:bg-slate-700/50 border-0"
+                  className="pl-10 bg-white/50 dark:bg-slate-700/50 border-0 placeholder:text-slate-400/70"
                 />
               </div>
-              
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="w-full md:w-32 bg-white/50 dark:bg-slate-700/50 border-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部</SelectItem>
-                  <SelectItem value="pending">待处理</SelectItem>
-                  <SelectItem value="completed">已完成</SelectItem>
-                </SelectContent>
-              </Select>
-              
-              <Select value={filterPriority} onValueChange={setFilterPriority}>
-                <SelectTrigger className="w-full md:w-32 bg-white/50 dark:bg-slate-700/50 border-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">所有优先级</SelectItem>
-                  <SelectItem value="high">高</SelectItem>
-                  <SelectItem value="medium">中</SelectItem>
-                  <SelectItem value="low">低</SelectItem>
-                </SelectContent>
-              </Select>
-              
-              <Select value={filterCategory} onValueChange={setFilterCategory}>
-                <SelectTrigger className="w-full md:w-36 bg-white/50 dark:bg-slate-700/50 border-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">所有分类</SelectItem>
-                  {categories.map(cat => (
-                    <SelectItem key={cat.value} value={cat.value}>
-                      {cat.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </CardContent>
         </Card>
@@ -413,7 +714,7 @@ export default function TodosPage() {
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ delay: 0.5 }}
+        transition={{ delay: 0.4 }}
         className="space-y-4"
       >
         <AnimatePresence mode="popLayout">
@@ -439,14 +740,14 @@ export default function TodosPage() {
                     ? "bg-slate-100/80 dark:bg-slate-800/70" 
                     : "bg-white/95 dark:bg-slate-800/85"
                 )}>
-                  <CardContent className="p-6">
+                  <CardContent className="p-4">
                     <div className="flex items-start gap-4">
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => toggleTodo(todo.id)}
                         className={cn(
-                          "p-0 h-auto hover:bg-transparent transition-colors",
+                          "p-0 h-auto hover:bg-transparent transition-colors mt-1",
                           todo.completed ? "text-green-500" : "text-slate-400 hover:text-green-500"
                         )}
                       >
@@ -457,58 +758,78 @@ export default function TodosPage() {
                         )}
                       </Button>
                       
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2">
-                          <h3 className={cn(
-                            "text-lg font-semibold transition-all",
-                            todo.completed 
-                              ? "line-through text-slate-500 dark:text-slate-400" 
-                              : "text-slate-800 dark:text-white"
-                          )}>
-                            {todo.title}
-                          </h3>
-                          
-                          <Badge variant="outline" className={priorityColors[todo.priority]}>
-                            <PriorityIcon className="h-3 w-3 mr-1" />
-                            {priorityTranslations[todo.priority]}
-                          </Badge>
-                          
-                          <Badge variant="outline" className="bg-slate-100 dark:bg-slate-700">
-                            <div className={cn("w-2 h-2 rounded-full mr-1", categoryInfo.color)} />
-                            {categoryInfo.label}
-                          </Badge>
-                        </div>
-                        
-                        {todo.description && (
-                          <p className={cn(
-                            "text-sm mb-2 transition-all",
-                            todo.completed 
-                              ? "text-slate-400 dark:text-slate-500" 
-                              : "text-slate-600 dark:text-slate-300"
-                          )}>
-                            {todo.description}
-                          </p>
-                        )}
-                        
-                        <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
-                          <div className="flex items-center gap-1">
-                            <Calendar className="h-3 w-3" />
-                            {todo.createdAt?.toLocaleDateString?.()}
+                      <div className="flex-1 grid grid-cols-3 gap-x-4 min-w-0">
+                        <div className="col-span-3 lg:col-span-2">
+                          <div className="flex items-center flex-wrap gap-2 mb-2">
+                            <h3 className={cn(
+                              "text-lg font-semibold transition-all",
+                              todo.completed 
+                                ? "line-through text-slate-500 dark:text-slate-400" 
+                                : "text-slate-800 dark:text-white"
+                            )}>
+                              {todo.title}
+                            </h3>
+                            
+                            <Badge variant="outline" className={priorityColors[todo.priority]}>
+                              <PriorityIcon className="h-3 w-3 mr-1" />
+                              {priorityTranslations[todo.priority]}
+                            </Badge>
+                            
+                            <Badge variant="outline" className="bg-slate-100 dark:bg-slate-700">
+                              <div className={cn("w-2 h-2 rounded-full mr-1", categoryInfo.color)} />
+                              {categoryInfo.label}
+                            </Badge>
                           </div>
-                          {todo.dueDate && (
-                            <div className="flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              截止日期: {todo.dueDate.toLocaleDateString()}
-                            </div>
+                          
+                          {todo.description && (
+                            <p className={cn(
+                              "text-sm mb-2 transition-all",
+                              todo.completed 
+                                ? "text-slate-400 dark:text-slate-500" 
+                                : "text-slate-600 dark:text-slate-300"
+                            )}>
+                              {todo.description}
+                            </p>
                           )}
+                           <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 mt-2">
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              {todo.createdAt?.toLocaleDateString?.()}
+                            </div>
+                            {todo.dueDate && (
+                              <div className="flex items-center gap-1">
+                                <Clock className="h-3 w-3" />
+                                截止日期: {todo.dueDate.toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
                         </div>
+                        
+                        {todo.attachments && todo.attachments.length > 0 && (
+                          <div className="col-span-3 lg:col-span-1 mt-2 lg:mt-0 grid grid-cols-3 gap-2">
+                            {todo.attachments.map((url, i) => (
+                              <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                                <img
+                                  src={url}
+                                  alt={`Attachment ${i + 1}`}
+                                  className="w-full h-16 object-cover rounded-md hover:opacity-80 transition-opacity"
+                                />
+                              </a>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       
                       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setEditingTodo(todo)}
+                          onClick={() => {
+                            setEditingTodo(todo);
+                            setDialogAttachments(
+                              todo.attachments?.map((url) => ({ id: url, url })) || []
+                            );
+                          }}
                           className="text-slate-400 hover:text-indigo-500 p-1 h-auto"
                         >
                           <Edit3 className="h-4 w-4" />
@@ -555,39 +876,63 @@ export default function TodosPage() {
 
       {/* Edit Dialog */}
       {editingTodo && (
-        <Dialog open={!!editingTodo} onOpenChange={() => setEditingTodo(null)}>
-          <DialogContent className="backdrop-blur-sm bg-white/90 dark:bg-slate-800/90">
-            <DialogHeader>
-              <DialogTitle>编辑任务</DialogTitle>
-              <DialogDescription>
-                修改您的任务项。
+        <Dialog
+          open={!!editingTodo}
+          onOpenChange={() => {
+            setEditingTodo(null);
+            setDialogAttachments([]);
+          }}
+        >
+          <DialogContent className="backdrop-blur-xl bg-white/80 dark:bg-slate-900/80 rounded-2xl shadow-2xl border-0">
+            <DialogHeader className="text-center">
+              <DialogTitle className="text-3xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent pb-2">
+                更新任务
+              </DialogTitle>
+              <DialogDescription className="text-sm text-slate-500 dark:text-slate-400">
+                在这里完善您的任务细节。
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4">
+            <div className="space-y-6 pt-4">
               <div>
-                <Label htmlFor="edit-title">标题</Label>
+                <Label htmlFor="edit-title" className="text-slate-600 dark:text-slate-300">标题</Label>
                 <Input
                   id="edit-title"
                   value={editingTodo.title}
-                  onChange={(e) => setEditingTodo(prev => prev ? { ...prev, title: e.target.value } : null)}
+                  onChange={(e) =>
+                    setEditingTodo((prev) =>
+                      prev ? { ...prev, title: e.target.value } : null
+                    )
+                  }
+                  className="mt-2 bg-white/50 dark:bg-slate-800/50 border-slate-300 dark:border-slate-700"
                 />
               </div>
               <div>
-                <Label htmlFor="edit-description">描述</Label>
+                <Label htmlFor="edit-description" className="text-slate-600 dark:text-slate-300">描述</Label>
                 <Textarea
                   id="edit-description"
-                  value={editingTodo.description || ''}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditingTodo(prev => prev ? { ...prev, description: e.target.value } : null)}
+                  value={editingTodo.description || ""}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setEditingTodo((prev) =>
+                      prev ? { ...prev, description: e.target.value } : null
+                    )
+                  }
+                  className="mt-2 bg-white/50 dark:bg-slate-800/50 border-slate-300 dark:border-slate-700"
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label htmlFor="edit-priority">优先级</Label>
-                  <Select 
-                    value={editingTodo.priority} 
-                    onValueChange={(value: string) => setEditingTodo(prev => prev ? { ...prev, priority: value as Todo['priority'] } : null)}
+                  <Label htmlFor="edit-priority" className="text-slate-600 dark:text-slate-300">优先级</Label>
+                  <Select
+                    value={editingTodo.priority}
+                    onValueChange={(value: string) =>
+                      setEditingTodo((prev) =>
+                        prev
+                          ? { ...prev, priority: value as Todo["priority"] }
+                          : null
+                      )
+                    }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="mt-2 bg-white/50 dark:bg-slate-800/50 border-slate-300 dark:border-slate-700">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -598,16 +943,20 @@ export default function TodosPage() {
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="edit-category">分类</Label>
-                  <Select 
-                    value={editingTodo.category} 
-                    onValueChange={(value: string) => setEditingTodo(prev => prev ? { ...prev, category: value } : null)}
+                  <Label htmlFor="edit-category" className="text-slate-600 dark:text-slate-300">分类</Label>
+                  <Select
+                    value={editingTodo.category}
+                    onValueChange={(value: string) =>
+                      setEditingTodo((prev) =>
+                        prev ? { ...prev, category: value } : null
+                      )
+                    }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="mt-2 bg-white/50 dark:bg-slate-800/50 border-slate-300 dark:border-slate-700">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {categories.map(cat => (
+                      {categories.map((cat) => (
                         <SelectItem key={cat.value} value={cat.value}>
                           {cat.label}
                         </SelectItem>
@@ -616,9 +965,61 @@ export default function TodosPage() {
                   </Select>
                 </div>
               </div>
-              <Button onClick={() => editingTodo && updateTodo(editingTodo)} className="w-full">
-                <Edit3 className="h-4 w-4 mr-2" />
-                更新任务
+
+              <div>
+                <Label className="text-slate-600 dark:text-slate-300">附件</Label>
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDialogDragEnd}
+                >
+                  <SortableContext
+                    items={dialogAttachments}
+                    strategy={rectSortingStrategy}
+                  >
+                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-3 mt-2">
+                      {dialogAttachments.map((attachment) => (
+                        <SortableAttachment
+                          key={attachment.id}
+                          item={attachment}
+                          onRemove={removeDialogAttachment}
+                          className="w-full h-20"
+                        />
+                      ))}
+                      {dialogAttachments.length < 9 && (
+                        <button
+                          onClick={() => dialogFileInputRef.current?.click()}
+                          className="w-full h-20 bg-slate-100 dark:bg-slate-800/50 rounded-md flex items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-indigo-500 transition-colors"
+                        >
+                          <Plus className="h-8 w-8 text-slate-400" />
+                        </button>
+                      )}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+                <input
+                  type="file"
+                  ref={dialogFileInputRef}
+                  multiple
+                  accept="image/*"
+                  onChange={handleDialogFileChange}
+                  className="hidden"
+                />
+              </div>
+
+              <Button
+                onClick={saveEditedTodo}
+                className="w-full h-12 text-lg bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-lg"
+                disabled={isUploading}
+              >
+                {isUploading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Check className="h-5 w-5 mr-2" />
+                    完成
+                  </>
+                )}
               </Button>
             </div>
           </DialogContent>

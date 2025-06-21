@@ -3,6 +3,7 @@ import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import Link from "next/link";
 import { UserMenu } from "@/components/user-menu";
+import { ClipboardCheck } from "lucide-react";
 import "./globals.css";
 
 const defaultUrl = process.env.VERCEL_URL
@@ -39,9 +40,10 @@ export default function RootLayout({
         >
           <header className="sticky top-0 z-40 w-full border-b bg-background/95 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60">
             <div className="container flex h-14 items-center">
-              <Link href="/" className="mr-6 flex items-center space-x-2">
+              <Link href="/" className="mr-6 flex items-center space-x-2 pl-4">
+                <ClipboardCheck className="h-6 w-6 text-indigo-500" />
                 <span className="font-bold bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-                  ✨ 任务大师
+                  任务大师
                 </span>
               </Link>
               <div className="flex flex-1 items-center justify-end space-x-2">

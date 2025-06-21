@@ -7,7 +7,8 @@ create table public.todos (
   priority text not null check (priority in ('low', 'medium', 'high')),
   category text not null,
   created_at timestamptz not null default now(),
-  due_date timestamptz
+  due_date timestamptz,
+  attachments text[]
 );
 
 alter table public.todos enable row level security;
