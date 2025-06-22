@@ -650,80 +650,85 @@ export default function TodosPage() {
       >
         <Card className="backdrop-blur-sm bg-white/95 dark:bg-slate-800/85 border-0 shadow-xl">
           <CardContent className="p-6">
-            <div className="flex items-start gap-4">
-              <div className="flex-1 space-y-4">
-                <Textarea
-                  ref={inputRef}
-                  placeholder="有什么需要做的？"
-                  value={newTodo.title}
-                  onChange={(e) =>
-                    setNewTodo((prev) => ({
-                      ...prev,
-                      title: e.target.value,
-                    }))
-                  }
-                  className="flex-1 bg-white/50 dark:bg-slate-700/50 border-0 h-10 text-lg px-4 py-2 resize-none rounded-full shadow-sm focus:ring-2 focus:ring-indigo-400 transition-all"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      addTodo();
-                    }
-                  }}
-                />
-
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
-                >
-                  <SortableContext
-                    items={attachments}
-                    strategy={rectSortingStrategy}
-                  >
-                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
-                      {attachments.map((attachment) => (
-                        <SortableAttachment
-                          key={attachment.id}
-                          item={{id: attachment.id, file: attachment.file}}
-                          onRemove={removeAttachment}
-                          className="w-20 h-20"
-                        />
-                      ))}
-                      {attachments.length < 9 && (
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="w-20 h-20 bg-slate-100 dark:bg-slate-700/50 rounded-md flex items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-indigo-500 transition-colors"
-                        >
-                          <Plus className="h-8 w-8 text-slate-400" />
-                        </button>
-                      )}
-                    </div>
-                  </SortableContext>
-                </DndContext>
+            {/* 附件缩略图显示在输入框上方 */}
+            {attachments.length > 0 && (
+              <div className="flex items-center gap-2 mb-2">
+                {attachments.slice(0, 3).map((attachment) => (
+                  <div key={attachment.id} className="relative group">
+                    <img
+                      src={URL.createObjectURL(attachment.file)}
+                      alt="预览"
+                      className="h-12 w-12 object-cover rounded-xl border border-slate-200 dark:border-slate-700 shadow"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(attachment.id)}
+                      className="absolute -top-2 -right-2 bg-black/60 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                      aria-label="移除图片"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
-
+            )}
+            <div className="flex items-center gap-0 bg-white/50 dark:bg-slate-700/50 rounded-2xl border border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-400 shadow px-2 h-14 transition-all">
+              {/* 上传图片按钮 */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center justify-center h-10 w-10 rounded-xl hover:bg-indigo-50 dark:hover:bg-slate-800 transition-colors mr-2"
+                type="button"
+                aria-label="添加图片附件"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-indigo-400"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                multiple
+                accept="image/*"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              {/* 文本输入 */}
+              <Textarea
+                ref={inputRef}
+                placeholder="有什么需要做的？"
+                value={newTodo.title}
+                onChange={(e) =>
+                  setNewTodo((prev) => ({
+                    ...prev,
+                    title: e.target.value,
+                  }))
+                }
+                className="flex-1 border-0 bg-transparent h-10 text-base px-2 py-3 resize-none shadow-none focus:ring-0 focus:outline-none placeholder:text-slate-400/80 rounded-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    addTodo();
+                  }
+                }}
+                maxLength={100}
+                style={{ minHeight: '2.5rem', boxShadow: 'none' }}
+              />
+              {/* 右侧提交按钮 */}
               <Button
                 onClick={addTodo}
-                disabled={isUploading}
+                disabled={isUploading || !newTodo.title.trim()}
                 size="icon"
-                className="h-10 w-10 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-xl flex items-center justify-center text-white text-xl p-0"
+                className={
+                  "h-10 w-10 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center p-0 ml-2 transition-transform active:scale-95 focus:ring-2 focus:ring-indigo-400 " +
+                  (isUploading || !newTodo.title.trim() ? " opacity-60 cursor-not-allowed" : " hover:bg-indigo-100 dark:hover:bg-indigo-900")
+                }
                 aria-label="添加任务"
               >
                 {isUploading ? (
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
-                  <Plus className="h-6 w-6" />
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-indigo-500"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>
                 )}
               </Button>
             </div>
-            <input
-              type="file"
-              ref={fileInputRef}
-              multiple
-              accept="image/*"
-              onChange={handleFileChange}
-              className="hidden"
-            />
           </CardContent>
         </Card>
       </motion.div>
