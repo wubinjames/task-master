@@ -46,7 +46,7 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
-import { User } from '@supabase/supabase-js';
+import { User, RealtimeChannel } from '@supabase/supabase-js';
 import {
   DndContext,
   closestCenter,
@@ -247,19 +247,88 @@ export default function TodosPage() {
   const sensors = useSensors(useSensor(PointerSensor));
 
   useEffect(() => {
+    const supabase = createClient();
+    let channel: RealtimeChannel;
+
     const fetchUserAndTodos = async () => {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.push('/auth/login');
+      const {
+        data: { user: supabaseUser },
+      } = await supabase.auth.getUser();
+
+      if (!supabaseUser) {
+        router.push("/auth/login");
         return;
       }
-      setUser(user);
-      await fetchTodos(user.id);
+      setUser(supabaseUser);
+      await fetchTodos(supabaseUser.id);
       setLoading(false);
       inputRef.current?.focus();
+
+      channel = supabase
+        .channel(`todos-user-${supabaseUser.id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "todos",
+            filter: `user_id=eq.${supabaseUser.id}`,
+          },
+          (payload) => {
+            console.log("Supabase Realtime event received:", payload);
+            if (payload.eventType === "INSERT") {
+              const newTodo = {
+                ...payload.new,
+                createdAt: payload.new.created_at
+                  ? new Date(payload.new.created_at)
+                  : new Date(),
+                dueDate: payload.new.due_date
+                  ? new Date(payload.new.due_date)
+                  : undefined,
+              } as Todo;
+              setTodos((currentTodos) => {
+                if (currentTodos.some((t) => t.id === newTodo.id)) {
+                  return currentTodos;
+                }
+                return [newTodo, ...currentTodos];
+              });
+            }
+
+            if (payload.eventType === "UPDATE") {
+              const updatedTodo = {
+                ...payload.new,
+                createdAt: payload.new.created_at
+                  ? new Date(payload.new.created_at)
+                  : new Date(),
+                dueDate: payload.new.due_date
+                  ? new Date(payload.new.due_date)
+                  : undefined,
+              } as Todo;
+              setTodos((currentTodos) =>
+                currentTodos.map((t) =>
+                  t.id === updatedTodo.id ? updatedTodo : t
+                )
+              );
+            }
+
+            if (payload.eventType === "DELETE") {
+              const oldId = (payload.old as { id: string }).id;
+              setTodos((currentTodos) =>
+                currentTodos.filter((t) => t.id !== oldId)
+              );
+            }
+          }
+        )
+        .subscribe();
     };
+
     fetchUserAndTodos();
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, [router]);
 
   const fetchTodos = async (userId: string) => {
@@ -430,10 +499,15 @@ export default function TodosPage() {
       await deleteAttachments(todoToDelete.attachments);
     }
 
+    // Optimistically update the UI for the current user
+    setTodos((prev) => prev.filter((todo) => todo.id !== id));
+
     const supabase = createClient();
     const { error } = await supabase.from("todos").delete().eq("id", id);
-    if (!error) {
-      setTodos((prev) => prev.filter((todo) => todo.id !== id));
+    if (error) {
+      // If the delete fails, revert the optimistic update
+      console.error("Failed to delete todo, reverting UI change:", error);
+      setTodos((prev) => [...prev, todoToDelete]);
     }
   };
 
@@ -586,10 +660,15 @@ export default function TodosPage() {
                     setNewTodo((prev) => ({
                       ...prev,
                       title: e.target.value,
-                      description: e.target.value,
                     }))
                   }
-                  className="flex-1 bg-white/50 dark:bg-slate-700/50 border-0 h-24 text-lg p-4 resize-none"
+                  className="flex-1 bg-white/50 dark:bg-slate-700/50 border-0 h-10 text-lg px-4 py-2 resize-none rounded-full shadow-sm focus:ring-2 focus:ring-indigo-400 transition-all"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      addTodo();
+                    }
+                  }}
                 />
 
                 <DndContext
@@ -623,20 +702,19 @@ export default function TodosPage() {
                 </DndContext>
               </div>
 
-              <div className="flex flex-col gap-2">
-                 <Button
-                  size="lg"
-                  onClick={addTodo}
-                  disabled={isUploading}
-                  className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-xl h-24 w-24 text-lg"
-                >
-                  {isUploading ? (
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    "添加"
-                  )}
-                </Button>
-              </div>
+              <Button
+                onClick={addTodo}
+                disabled={isUploading}
+                size="icon"
+                className="h-10 w-10 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-xl flex items-center justify-center text-white text-xl p-0"
+                aria-label="添加任务"
+              >
+                {isUploading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Plus className="h-6 w-6" />
+                )}
+              </Button>
             </div>
             <input
               type="file"

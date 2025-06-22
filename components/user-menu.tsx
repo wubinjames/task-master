@@ -33,8 +33,7 @@ export function UserMenu() {
   const handleLogout = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
-    setUser(null);
-    router.push("/");
+    window.location.replace('/auth/login');
   };
 
   if (!user) {
