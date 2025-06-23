@@ -249,7 +249,6 @@ export default function TodosPage() {
 
   useEffect(() => {
     const supabase = createClient();
-    let channel: RealtimeChannel;
 
     const fetchUserAndTodos = async () => {
       const {
@@ -264,73 +263,82 @@ export default function TodosPage() {
       await fetchTodos(supabaseUser.id);
       setLoading(false);
       inputRef.current?.focus();
-
-      channel = supabase
-        .channel(`todos-user-${supabaseUser.id}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "todos",
-            filter: `user_id=eq.${supabaseUser.id}`,
-          },
-          (payload) => {
-            console.log("Supabase Realtime event received:", payload);
-            if (payload.eventType === "INSERT") {
-              const newTodo = {
-                ...payload.new,
-                createdAt: payload.new.created_at
-                  ? new Date(payload.new.created_at)
-                  : new Date(),
-                dueDate: payload.new.due_date
-                  ? new Date(payload.new.due_date)
-                  : undefined,
-              } as Todo;
-              setTodos((currentTodos) => {
-                if (currentTodos.some((t) => t.id === newTodo.id)) {
-                  return currentTodos;
-                }
-                return [newTodo, ...currentTodos];
-              });
-            }
-
-            if (payload.eventType === "UPDATE") {
-              const updatedTodo = {
-                ...payload.new,
-                createdAt: payload.new.created_at
-                  ? new Date(payload.new.created_at)
-                  : new Date(),
-                dueDate: payload.new.due_date
-                  ? new Date(payload.new.due_date)
-                  : undefined,
-              } as Todo;
-              setTodos((currentTodos) =>
-                currentTodos.map((t) =>
-                  t.id === updatedTodo.id ? updatedTodo : t
-                )
-              );
-            }
-
-            if (payload.eventType === "DELETE") {
-              const oldId = (payload.old as { id: string }).id;
-              setTodos((currentTodos) =>
-                currentTodos.filter((t) => t.id !== oldId)
-              );
-            }
-          }
-        )
-        .subscribe();
     };
 
     fetchUserAndTodos();
+  }, [router]);
+
+  useEffect(() => {
+    if (!user) return;
+    const supabase = createClient();
+    // 监听整个 todos 表，回调里判断 user_id
+    const channel = supabase
+      .channel('todos-realtime')
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "todos",
+        },
+        (payload) => {
+          const userId = user?.id;
+          if (!userId) return;
+          const row = (payload.new || payload.old) as any;
+          if (!row) return;
+
+          if (payload.eventType === "DELETE") {
+            const oldId = (payload.old as { id: string }).id;
+            setTodos((currentTodos) =>
+              currentTodos.filter((t) => t.id !== oldId)
+            );
+            return;
+          }
+
+          if (row.user_id !== userId) return;
+
+          if (payload.eventType === "INSERT") {
+            const newTodo = {
+              ...payload.new,
+              createdAt: payload.new.created_at
+                ? new Date(payload.new.created_at)
+                : new Date(),
+              dueDate: payload.new.due_date
+                ? new Date(payload.new.due_date)
+                : undefined,
+            } as Todo;
+            setTodos((currentTodos) => {
+              if (currentTodos.some((t) => t.id === newTodo.id)) {
+                return currentTodos;
+              }
+              return [newTodo, ...currentTodos];
+            });
+          }
+
+          if (payload.eventType === "UPDATE") {
+            const updatedTodo = {
+              ...payload.new,
+              createdAt: payload.new.created_at
+                ? new Date(payload.new.created_at)
+                : new Date(),
+              dueDate: payload.new.due_date
+                ? new Date(payload.new.due_date)
+                : undefined,
+            } as Todo;
+            setTodos((currentTodos) =>
+              currentTodos.map((t) =>
+                t.id === updatedTodo.id ? updatedTodo : t
+              )
+            );
+          }
+        }
+      )
+      .subscribe();
 
     return () => {
-      if (channel) {
-        supabase.removeChannel(channel);
-      }
+      supabase.removeChannel(channel);
     };
-  }, [router]);
+  }, [router, user]);
 
   const fetchTodos = async (userId: string) => {
     const supabase = createClient();
@@ -500,15 +508,10 @@ export default function TodosPage() {
       await deleteAttachments(todoToDelete.attachments);
     }
 
-    // Optimistically update the UI for the current user
-    setTodos((prev) => prev.filter((todo) => todo.id !== id));
-
     const supabase = createClient();
     const { error } = await supabase.from("todos").delete().eq("id", id);
     if (error) {
-      // If the delete fails, revert the optimistic update
-      console.error("Failed to delete todo, reverting UI change:", error);
-      setTodos((prev) => [...prev, todoToDelete]);
+      console.error("Failed to delete todo:", error);
     }
   };
 
